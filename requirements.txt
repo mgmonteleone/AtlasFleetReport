@@ -1,8 +1,8 @@
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
+gsheets
+gspread
 pydrive2
-atlasapi
+atlasapi>=2.0.0
 texttable
-panda
+pandas
 humanfriendly
+xlsxwriter

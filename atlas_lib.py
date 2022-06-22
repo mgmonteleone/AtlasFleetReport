@@ -1,12 +1,11 @@
 from atlasapi.atlas import Atlas
 from atlasapi.clusters import ClusterConfig, ClusterType
-from atlasapi.specs import ReplicaSetTypes, AtlasPeriods, AtlasGranularities, Host, AtlasMeasurementTypes,\
+from atlasapi.specs import ReplicaSetTypes, AtlasPeriods, AtlasGranularities, Host, AtlasMeasurementTypes, \
     AtlasMeasurement, AtlasMeasurementValue
 from pprint import pprint
 from typing import List, Optional, Generator, Union, Iterable
-import humanfriendly as hf
-
-
+from pandas import DataFrame as df
+from collections import OrderedDict
 
 METRICS = [
     AtlasMeasurementTypes.Cache.bytes_read,
@@ -25,6 +24,18 @@ METRICS = [
     AtlasMeasurementTypes.Network.bytes_out,
 ]
 
+DISK_METRICS = [
+    AtlasMeasurementTypes.Disk.IOPS.read,
+    AtlasMeasurementTypes.Disk.IOPS.read_max,
+    AtlasMeasurementTypes.Disk.IOPS.write,
+    AtlasMeasurementTypes.Disk.IOPS.write_max,
+    AtlasMeasurementTypes.Disk.Latency.write,
+    AtlasMeasurementTypes.Disk.Latency.write_max,
+    AtlasMeasurementTypes.Disk.Latency.read,
+    AtlasMeasurementTypes.Disk.Latency.read_max,
+    AtlasMeasurementTypes.Disk.Util.util,
+    AtlasMeasurementTypes.Disk.Util.util_max
+]
 
 class HostData:
     def __init__(self, host_obj: Host):
@@ -53,9 +64,46 @@ class HostData:
         self.targeting_per_returned: Optional[AtlasMeasurement] = None
         self.targeting_objects: Optional[AtlasMeasurement] = None
 
-    def store_measurement(self, measurements_obj: AtlasMeasurement) -> bool:
 
+        self.disk_iops_read: Optional[AtlasMeasurement] = None
+        self.disk_iops_read_max: Optional[AtlasMeasurement] = None
+        self.disk_iops_write: Optional[AtlasMeasurement] = None
+        self.disk_iops_write_max : Optional[AtlasMeasurement] = None
+
+        self.disk_latency_write: Optional[AtlasMeasurement] = None
+        self.disk_latency_write_max: Optional[AtlasMeasurement] = None
+        self.disk_latency_read: Optional[AtlasMeasurement] = None
+        self.disk_latency_read_max: Optional[AtlasMeasurement] = None
+
+        self.disk_util: Optional[AtlasMeasurement] = None
+        self.disk_util_max: Optional[AtlasMeasurement] = None
+
+    def store_measurement(self, measurements_obj: AtlasMeasurement) -> bool:
         try:
+            #Disk Metrics
+            if measurements_obj.name == AtlasMeasurementTypes.Disk.IOPS.read:
+                self.disk_iops_read = measurements_obj
+            elif measurements_obj.name == AtlasMeasurementTypes.Disk.IOPS.read_max:
+                self.disk_iops_read_max = measurements_obj
+            elif measurements_obj.name == AtlasMeasurementTypes.Disk.IOPS.write:
+                self.disk_iops_write = measurements_obj
+            elif measurements_obj.name == AtlasMeasurementTypes.Disk.IOPS.read_max:
+                self.disk_iops_read_max = measurements_obj
+
+            elif measurements_obj.name == AtlasMeasurementTypes.Disk.Latency.read:
+                self.disk_latency_read = measurements_obj
+            elif measurements_obj.name == AtlasMeasurementTypes.Disk.Latency.read_max:
+                self.disk_latency_read_max = measurements_obj
+            elif measurements_obj.name == AtlasMeasurementTypes.Disk.Latency.write:
+                self.disk_latency_write = measurements_obj
+            elif measurements_obj.name == AtlasMeasurementTypes.Disk.Latency.write_max:
+                self.disk_latency_write_max = measurements_obj
+
+            elif measurements_obj.name == AtlasMeasurementTypes.Disk.Util.util:
+                self.disk_util = measurements_obj
+            elif measurements_obj.name == AtlasMeasurementTypes.Disk.Util.util_max:
+                self.disk_util_max = measurements_obj
+
             # DB Size and Storage
             if measurements_obj.name == AtlasMeasurementTypes.Db.data_size:
                 self.db_data_size = measurements_obj
@@ -102,14 +150,29 @@ class HostData:
         return True
 
     def store_measurements(self, atlas_obj: Atlas, granularity: AtlasGranularities = AtlasGranularities.FIVE_MINUTE,
-                           period = AtlasPeriods.WEEKS_1) -> None:
+                           period=AtlasPeriods.WEEKS_1) -> None:
+        """Stores measurements from the API to the HostData object.
+
+
+
+        :param atlas_obj (Atlas):
+        :param granularity:
+        :param period:
+        """
         status_str = f'Getting Measurements for {len(METRICS)} metrics. . .'
+        # Retrieving and storing Host Metrics
         for each_measurement in METRICS:
-            print(status_str, end='\r')
+            print(status_str)
             result = list(self.host_obj.get_measurement_for_host(atlas_obj=atlas_obj,
-                granularity=granularity, period= period, measurement=each_measurement))[0]
+                                                                 granularity=granularity, period=period,
+                                                                 measurement=each_measurement))[0]
             self.store_measurement(result)
-            status_str.join('.')
+            status_str.swapcase()
+        # Retrieving and Storing Disk Measurements
+        for each_disk_measure in self.host_obj.data_partition_stats(atlas_obj=atlas_obj,
+                                                                    granularity=granularity,
+                                                                    period=period):
+            self.store_measurement(each_disk_measure)
 
 
 class ClusterData:
@@ -149,24 +212,24 @@ class ClusterData:
         self.project_id = project_id
         self.project_name = project_name
 
-    def _hosts(self, atlas_obj: Atlas) -> Iterable[Host]:
-        if len(list(atlas_obj.Hosts.host_list)) == 0:
-            atlas_obj.Hosts.fill_host_list(for_cluster=self.name)
+    def hosts(self, atlas_obj: Atlas) -> Iterable[Host]:
+        atlas_obj.Hosts.fill_host_list()
+        host_list = list(atlas_obj.Hosts.host_list)
+        print(f'Cluster: {self.name}')
+        filtered = [host for host in host_list if host.cluster_name == self.name]
+        return filtered
 
-        atlas_obj.Hosts.fill_host_list(for_cluster=self.name)
-        return atlas_obj.Hosts.host_list
-
-    def _primary(self, atlas_obj: Atlas) -> Host:
-        if len(list(atlas_obj.Hosts.host_list)) == 0:
-            atlas_obj.Hosts.fill_host_list(for_cluster=self.name)
-        return list(atlas_obj.Hosts.host_list_primaries)[0]
-
-    def hosts(self,atlas_obj: Atlas) -> Iterable[HostData]:
-        for each in self._hosts(atlas_obj):
-            yield HostData(each)
+    def primary(self, atlas_obj: Atlas) -> Optional[Host]:
+        primary_member = None
+        for each in self.hosts(atlas_obj):
+            if each.type == ReplicaSetTypes.REPLICA_PRIMARY:
+                primary_member = each
+            else:
+                pass
+        return primary_member
 
     def primary_metrics(self, atlas_obj: Atlas,
-                        granularity: AtlasGranularities = None, period: AtlasPeriods = None ) -> HostData:
+                        granularity: AtlasGranularities = None, period: AtlasPeriods = None) -> Optional[HostData]:
         """Returns Atlas Metrics for the cluster's primary.
 
         Returns the pre-defined metrics defined in METRICS
@@ -176,9 +239,13 @@ class ClusterData:
         :param period: The period to be used for metrics.
         :return:
         """
-        primary: HostData = HostData(self._primary(atlas_obj=atlas_obj))
-        primary.store_measurements(atlas_obj, granularity=granularity,period=period)
-        return primary
+        primary: HostData = HostData(self.primary(atlas_obj=atlas_obj))
+        if primary.host_obj:
+            pprint(f'The primary is {primary.host_obj.hostname_alias}')
+            primary.store_measurements(atlas_obj, granularity=granularity, period=period)
+            return primary
+        else:
+            return None
 
 
 class Fleet:
@@ -195,7 +262,7 @@ class Fleet:
     def clusters_list(self) -> Iterable[ClusterData]:
         """List of all clusters (databases) in the Fleet.
 
-        if the Atlas obj is instantiated without an Org, this can be from mutiple orgs, depending on the access
+        if the Atlas obj is instantiated without an Org, this can be from multiple orgs, depending on the access
         level of the key used.
 
         """
@@ -214,7 +281,7 @@ class Fleet:
                                       )
             yield cluster_obj
 
-    def get_full_report_primary_metrics(self,granularity: AtlasGranularities, period: AtlasPeriods) -> Iterable[dict]:
+    def get_full_report_primary_metrics(self, granularity: AtlasGranularities, period: AtlasPeriods) -> Iterable[dict]:
         """
 
         :type period: object
@@ -223,29 +290,61 @@ class Fleet:
         :param period : The period for metrics.
         """
         for each_cluster in self.clusters_list:
-            host_data = each_cluster.primary_metrics(atlas_obj=self.atlas,granularity=granularity, period=period)
-            base_dict = each_cluster.__dict__
-            base_dict[str(host_data.cache_used.name)] = host_data.cache_used.measurement_stats.mean
-            base_dict[str(host_data.cache_dirty.name)] = host_data.cache_dirty.measurement_stats.mean
-            base_dict[str(host_data.cache_bytes_read.name)] = host_data.cache_bytes_read.measurement_stats.mean
-            base_dict[str(host_data.cache_bytes_written.name)] = host_data.cache_bytes_written.measurement_stats.mean
+            try:
+                host_data = each_cluster.primary_metrics(atlas_obj=self.atlas, granularity=granularity, period=period)
+            except Exception as e:
+                print('--------Error Here-----------')
+                raise e
+            base_dict = OrderedDict(each_cluster.__dict__)
+            try:
+                base_dict[str(host_data.cache_used.name)] = host_data.cache_used.measurement_stats.mean
+                base_dict[str(host_data.cache_dirty.name)] = host_data.cache_dirty.measurement_stats.mean
+                base_dict[str(host_data.cache_bytes_read.name)] = host_data.cache_bytes_read.measurement_stats.mean
+                base_dict[
+                    str(host_data.cache_bytes_written.name)] = host_data.cache_bytes_written.measurement_stats.mean
 
-            base_dict[str(host_data.targeting_objects.name)] = host_data.targeting_objects.measurement_stats.mean
-            base_dict[str(host_data.targeting_per_returned.name)] = host_data.targeting_per_returned.measurement_stats.mean
+                base_dict[str(host_data.targeting_objects.name)] = host_data.targeting_objects.measurement_stats.mean
+                base_dict[
+                    str(host_data.targeting_per_returned.name)] = host_data.targeting_per_returned.measurement_stats.mean
 
-            base_dict[str(host_data.queued_readers.name)] = host_data.queued_readers.measurement_stats.mean
-            base_dict[str(host_data.queued_writers.name)] = host_data.queued_writers.measurement_stats.mean
+                base_dict[str(host_data.queued_readers.name)] = host_data.queued_readers.measurement_stats.mean
+                base_dict[str(host_data.queued_writers.name)] = host_data.queued_writers.measurement_stats.mean
 
-            base_dict[str(host_data.tickets_write.name)] = host_data.tickets_write.measurement_stats.mean
-            base_dict[str(host_data.tickets_read.name)] = host_data.tickets_read.measurement_stats.mean
+                base_dict[str(host_data.tickets_write.name)] = host_data.tickets_write.measurement_stats.mean
+                base_dict[str(host_data.tickets_read.name)] = host_data.tickets_read.measurement_stats.mean
 
-            base_dict[str(host_data.db_data_size.name)] = host_data.db_data_size.measurement_stats.mean
-            base_dict[str(host_data.db_storage.name)] = host_data.db_storage.measurement_stats.mean
+                base_dict[str(host_data.db_data_size.name)] = host_data.db_data_size.measurement_stats.mean
+                base_dict[str(host_data.db_storage.name)] = host_data.db_storage.measurement_stats.mean
 
-            base_dict[str(host_data.net_in_data.name)] = host_data.net_in_data.measurement_stats.mean
-            base_dict[str(host_data.net_out_data.name)] = host_data.net_out_data.measurement_stats.mean
-            base_dict['Granularity'] = granularity
-            base_dict['Period'] = period
+                base_dict[str(host_data.net_in_data.name)] = host_data.net_in_data.measurement_stats.mean
+                base_dict[str(host_data.net_out_data.name)] = host_data.net_out_data.measurement_stats.mean
+
+                base_dict[str(host_data.disk_util.name)] = host_data.disk_util.measurement_stats.mean
+                base_dict[str(host_data.disk_util_max.name)] = host_data.disk_util_max.measurement_stats.mean
+
+                base_dict[str(host_data.disk_latency_write.name)] = host_data.disk_latency_write.measurement_stats.mean
+                base_dict[str(host_data.disk_latency_write_max.name)] = host_data.disk_latency_write_max.measurement_stats.mean
+                base_dict[str(host_data.disk_latency_read.name)] = host_data.disk_latency_read.measurement_stats.mean
+                base_dict[str(host_data.disk_latency_read_max.name)] = host_data.disk_latency_read_max.measurement_stats.mean
+
+                base_dict[str(host_data.disk_iops_read.name)] = host_data.disk_iops_read.measurement_stats.mean
+                base_dict[str(host_data.disk_iops_read_max.name)] = host_data.disk_iops_read_max.measurement_stats.mean
+                base_dict[str(host_data.disk_iops_write.name)] = host_data.disk_iops_write.measurement_stats.mean
+                base_dict[str(host_data.disk_iops_write_max.name)] = host_data.disk_iops_write_max.measurement_stats.mean
+
+
+                base_dict['Granularity'] = granularity
+                base_dict['Period'] = period
+            except AttributeError:
+                print(f"No primary available for {each_cluster.name}")
+
             yield base_dict
 
+    def get_full_report_primary_metrics_df(self, granularity: AtlasGranularities, period: AtlasPeriods) -> df:
+        data_list = []
+        for each_record in self.get_full_report_primary_metrics(granularity, period):
+            data_list.append(each_record)
 
+        dataFrame = df(data_list)
+
+        return dataFrame

@@ -27,5 +27,32 @@ class MeasurementTests(BaseTests):
     test_00_fleet_report.basic = True
 
 
+#    def test_01_fleet_report_dataframe(self):
+#        atlas: Atlas = self.a
+#        current_fleet = Fleet(atlas)
+#
+#        dfout = current_fleet.get_full_report_primary_metrics_df(granularity=AtlasGranularities.HOUR,
+#                                                          period=AtlasPeriods.WEEKS_1)
+#        print(dfout)
+
+
+    def test_01_store_measurements(self):
+        atlas: Atlas = self.a
+        current_fleet = Fleet(atlas)
+
+        for each_cluster in current_fleet.clusters_list:
+            if  '-' not in each_cluster.name:
+                try:
+                    print(f'Cluster : {each_cluster.name}... Primary Host = {each_cluster.primary(atlas).hostname_alias} - {each_cluster.primary(atlas).hostname}')
+                except AttributeError:
+                    print(
+                        f'Cluster : {each_cluster.name}... Primary Host = {each_cluster.primary(atlas)} - {each_cluster.primary(atlas)}')
+                for each_host in each_cluster.hosts(self.a):
+                    print(f'-----------------{each_host.hostname}:{each_host.port}: role: {each_host.type.value}')
+            else:
+                print('------------------')
+
+
+
 
 
