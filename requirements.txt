@@ -1,7 +1,7 @@
 gsheets
 gspread
 pydrive2
-atlasapi>=2.0.0
+atlasapi>=2.0.1
 texttable
 pandas
 humanfriendly

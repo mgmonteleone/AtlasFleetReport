@@ -6,7 +6,9 @@ from pprint import pprint
 from typing import List, Optional, Generator, Union, Iterable
 from pandas import DataFrame as df
 from collections import OrderedDict
+import logging
 
+logger = logging.getLogger(__name__)
 METRICS = [
     AtlasMeasurementTypes.Cache.bytes_read,
     AtlasMeasurementTypes.Cache.bytes_written,
@@ -145,7 +147,7 @@ class HostData:
                 self.cache_dirty = measurements_obj
 
         except Exception as e:
-            pprint(f'We got an error adding the measurement: {e}')
+            logger.info(f'We got an error adding the measurement: {e}')
             return False
         return True
 
@@ -162,7 +164,7 @@ class HostData:
         status_str = f'Getting Measurements for {len(METRICS)} metrics. . .'
         # Retrieving and storing Host Metrics
         for each_measurement in METRICS:
-            print(status_str)
+            logger.info(status_str)
             result = list(self.host_obj.get_measurement_for_host(atlas_obj=atlas_obj,
                                                                  granularity=granularity, period=period,
                                                                  measurement=each_measurement))[0]
@@ -198,6 +200,7 @@ class ClusterData:
         :param electable:
         :param analytics:
         :param ro:
+        :db_count:
         """
         self.ro = ro
         self.analytics = analytics
@@ -215,11 +218,16 @@ class ClusterData:
     def hosts(self, atlas_obj: Atlas) -> Iterable[Host]:
         atlas_obj.Hosts.fill_host_list()
         host_list = list(atlas_obj.Hosts.host_list)
-        print(f'Cluster: {self.name}')
+        logger.info(f'Cluster: {self.name}')
         filtered = [host for host in host_list if host.cluster_name == self.name]
         return filtered
 
     def primary(self, atlas_obj: Atlas) -> Optional[Host]:
+        """Returns a Host object of the CLusters current primary.
+
+        :param atlas_obj:
+        :return:
+        """
         primary_member = None
         for each in self.hosts(atlas_obj):
             if each.type == ReplicaSetTypes.REPLICA_PRIMARY:
@@ -227,6 +235,57 @@ class ClusterData:
             else:
                 pass
         return primary_member
+
+    def db_count(self, atlas_obj: Atlas, userland_only: bool = True) -> int:
+        """Returns a count of userland databases on the Primary of the cluster.
+
+        :param atlas_obj:
+        :param userland_only:
+        :return:
+        """
+        primary = self.primary(atlas_obj)
+        count = 0
+        if primary:
+            for each in primary.get_databases(atlas_obj):
+                if each not in ['admin', 'local', 'config']:
+                    count += 1
+        return count
+
+    def db_item_count(self, atlas_obj: Atlas, measurement_to_count: AtlasMeasurementTypes.Namespaces):
+        """Returns the total count of the passed Namespace measurement for all databases.
+
+        Iterates through all userland databases and adds the max value.
+
+        :param atlas_obj:
+        :param measurement_to_count:
+        """
+        primary = self.primary(atlas_obj)
+        logger.info(F"Getting counts for {measurement_to_count}")
+        item_count = 0
+        for each_database in primary.get_databases(atlas_obj=atlas_obj):
+            if each_database not in ['admin', 'local', 'config']:
+                database_stats = primary.get_measurements_for_database(atlas_obj=atlas_obj, database_name=each_database)
+                for each_measurement in database_stats:
+                    if each_measurement.name == measurement_to_count:
+                        item_count += each_measurement.measurement_stats.max
+        return item_count
+
+    def count_collections(self, atlas_obj: Atlas) -> int:
+        return self.db_item_count(atlas_obj,AtlasMeasurementTypes.Namespaces.collection_count)
+
+    def count_indexes(self, atlas_obj: Atlas) -> int:
+        return self.db_item_count(atlas_obj,AtlasMeasurementTypes.Namespaces.index_count)
+
+    def count_views(self, atlas_obj: Atlas) -> int:
+        return self.db_item_count(atlas_obj,AtlasMeasurementTypes.Namespaces.view_count)
+
+    def count_objects(self,atlas_obj: Atlas) -> int:
+        """ Number of objects (specifically, documents) in all  userland databases across all collections.
+
+        :param atlas_obj:
+        :return: Count
+        """
+        return self.db_item_count(atlas_obj,AtlasMeasurementTypes.Namespaces.object_count)
 
     def primary_metrics(self, atlas_obj: Atlas,
                         granularity: AtlasGranularities = None, period: AtlasPeriods = None) -> Optional[HostData]:
@@ -241,7 +300,7 @@ class ClusterData:
         """
         primary: HostData = HostData(self.primary(atlas_obj=atlas_obj))
         if primary.host_obj:
-            pprint(f'The primary is {primary.host_obj.hostname_alias}')
+            logger.info(f'The primary is {primary.host_obj.hostname_alias}')
             primary.store_measurements(atlas_obj, granularity=granularity, period=period)
             return primary
         else:
@@ -286,17 +345,32 @@ class Fleet:
 
         :type period: object
         :type granularity: AtlasGranularities
-        :param granularity: The granularity for the metrics.
-        :param period : The period for metrics.
+        :param granularity: The granularity for the metrics. (default = 10 seconds)
+        :param period : The period for metrics. (default = 24 hours)
+
         """
+        if not granularity:
+            granularity = AtlasGranularities.TEN_SECOND
+
+        if not period:
+            period = AtlasPeriods.HOURS_24
+
         for each_cluster in self.clusters_list:
             try:
                 host_data = each_cluster.primary_metrics(atlas_obj=self.atlas, granularity=granularity, period=period)
             except Exception as e:
-                print('--------Error Here-----------')
+                logger.debug('--------Error Here-----------')
                 raise e
             base_dict = OrderedDict(each_cluster.__dict__)
             try:
+                # Namespace Counts
+                base_dict['views'] = each_cluster.count_views(self.atlas)
+                base_dict['objects'] = each_cluster.count_objects(self.atlas)
+                base_dict['indexes'] = each_cluster.count_indexes(self.atlas)
+                base_dict['collections'] = each_cluster.count_collections(self.atlas)
+                base_dict['databases'] = each_cluster.db_count(self.atlas)
+
+                # Host Measurements
                 base_dict[str(host_data.cache_used.name)] = host_data.cache_used.measurement_stats.mean
                 base_dict[str(host_data.cache_dirty.name)] = host_data.cache_dirty.measurement_stats.mean
                 base_dict[str(host_data.cache_bytes_read.name)] = host_data.cache_bytes_read.measurement_stats.mean
@@ -319,6 +393,7 @@ class Fleet:
                 base_dict[str(host_data.net_in_data.name)] = host_data.net_in_data.measurement_stats.mean
                 base_dict[str(host_data.net_out_data.name)] = host_data.net_out_data.measurement_stats.mean
 
+                # Data Disk Metrics
                 base_dict[str(host_data.disk_util.name)] = host_data.disk_util.measurement_stats.mean
                 base_dict[str(host_data.disk_util_max.name)] = host_data.disk_util_max.measurement_stats.mean
 
@@ -332,11 +407,14 @@ class Fleet:
                 base_dict[str(host_data.disk_iops_write.name)] = host_data.disk_iops_write.measurement_stats.mean
                 base_dict[str(host_data.disk_iops_write_max.name)] = host_data.disk_iops_write_max.measurement_stats.mean
 
-
                 base_dict['Granularity'] = granularity
                 base_dict['Period'] = period
-            except AttributeError:
-                print(f"No primary available for {each_cluster.name}")
+            except AttributeError as e:
+                # We want to skip over an error which is caused by no primary being available.
+                if 'object has no attribute' in str(e):
+                    logger.info(f"No primary available for {each_cluster.name}, could not get metrics")
+                else:
+                    raise e
 
             yield base_dict
 
