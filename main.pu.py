@@ -14,9 +14,16 @@ for each_project in atlas.Organizations.get_all_projects_for_org(org_id=org_obj.
     print(each_project.name)
     project_list.append(each_project)
 
+n = 0
 for each_one in project_list:
     atlas_obj = Atlas(atlas_user,atlas_key,each_one.id)
     fleet_obj = Fleet(atlas_obj)
     report = SingleProjFleetReport(atlas_user=atlas_user,atlas_key=atlas_key,atlas_group=each_one.id, sheet_uri=sheet_uri,include_namespace_metrics=True,
-                                   include_disk_metrics=False,include_host_metrics=False)
+                                   include_disk_metrics=False,include_host_metrics=False,single_sheet_mode=True,
+                                   single_sheet_name=org_obj.name.replace(':','_'))
+    if n == 0:
+        report.create_sheet()
+        report.active_worksheet = report.spreadsheet.worksheet(org_obj.name.replace(':','_'))
+        report.create_sheet_headers_manual()
     report.save_report_data_to_sheet()
+    n += 1

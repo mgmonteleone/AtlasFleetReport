@@ -13,14 +13,15 @@ report_uri = 'https://docs.google.com/spreadsheets/d/1qKD9da3BnMJp9kNJenf_D5udsi
 logger = logging.getLogger("gsheet")
 logger.setLevel(logging.DEBUG)
 
-
 class SingleProjFleetReport:
     def __init__(self, atlas_user: str,
                  atlas_key: str, atlas_group: str, sheet_uri: str = os.getenv('SHEET_URI'),
                  granularity: AtlasGranularities = AtlasGranularities.HOUR,
                  period: AtlasPeriods = AtlasPeriods.HOURS_8,
                  include_namespace_metrics: bool = True, include_host_metrics: bool = False,
-                 include_disk_metrics: bool = False):
+                 include_disk_metrics: bool = False,
+                 single_sheet_mode: bool = False,
+                 single_sheet_name: str = "Data"):
         """
 
         :param sheet_uri:
@@ -33,25 +34,40 @@ class SingleProjFleetReport:
         self.project_obj = self.fleet.atlas.Projects.project_by_id(self.fleet.atlas.group)
         self.gspread_obj = gspread.service_account()
         self.spreadsheet = self.gspread_obj.open_by_url(sheet_uri)
-        try:
-            self.active_worksheet = self.spreadsheet.worksheet(self.project_obj.name)
-            self.spreadsheet.del_worksheet(self.active_worksheet)
-        except gspread.exceptions.WorksheetNotFound:
-            print("Spreadsheet not there, so will not delete it.")
-
-        print(f"Creating Spreadsheet named {self.project_obj.name}")
-        self.active_worksheet = self.spreadsheet.add_worksheet(self.project_obj.name, 2, 1)
+        self.worksheet_name = self.project_obj.name
+        self.single_sheet_mode = single_sheet_mode
+        self.single_sheet_name = single_sheet_name
+        if single_sheet_mode is True:
+            self.worksheet_name = self.single_sheet_name
         self.granularity: AtlasGranularities = granularity
         self.period: AtlasPeriods = period
         self.include_namespace_metrics = include_namespace_metrics
         self.include_host_metrics = include_host_metrics
         self.include_disk_metrics = include_disk_metrics
 
+    def create_sheet(self):
+        if self.single_sheet_mode is False:
+            try:
+                self.active_worksheet = self.spreadsheet.worksheet(self.worksheet_name)
+                self.spreadsheet.del_worksheet(self.active_worksheet)
+            except gspread.exceptions.WorksheetNotFound:
+                print("Spreadsheet not there, so will not delete it.")
+
+        try:
+            print(f"Creating Spreadsheet named {self.worksheet_name}")
+            self.active_worksheet = self.spreadsheet.add_worksheet(self.worksheet_name, 2, 1)
+        except gspread.exceptions.APIError as e:
+            if 'already exists' in e.response.text:
+                print('No need to create, we will append to exisiting!!')
+            else:
+                print(e.response.text)
+                raise e
 
     def update_status_in_sheet(self, row_ref: int = 1, col_ref: int = 1, status_text: str = 'OK'):
         self.active_worksheet.update_cell(row_ref, col_ref, value=status_text)
 
     def create_sheet_headers_manual(self):
+        self.active_worksheet = self.spreadsheet.worksheet(self.worksheet_name)
         APPENDIX_HEADERS = ['Granularity', 'Period']
         NAMESPACE_HEADERS = ['views',	'objects',	'indexes',	'collections',	'databases']
         BASE_HEADERS = ['ro', 'analytics', 'electable', 'shards', 'io_type', 'IOPS', 'tier', 'disk_size', 'name', \
@@ -65,7 +81,8 @@ class SingleProjFleetReport:
         BASE_HEADERS.extend(APPENDIX_HEADERS)
         start = time()
         print(f'Creating Headers...')
-        self.active_worksheet.update_cell(1, 1, value='Creating Headers.....')
+        self.update_status_in_sheet(status_text='Creating Headers.....')
+        self.active_worksheet = self.spreadsheet.worksheet(self.worksheet_name)
         self.active_worksheet.append_row(BASE_HEADERS)
         print('Done creating headers')
         self.update_status_in_sheet(status_text=f'Done Creating Headers ({int(time() - start)}s)')
@@ -126,8 +143,8 @@ class SingleProjFleetReport:
                                                                        period=self.period):
             yield each_cluster
 
-    def save_report_data_to_sheet(self, include_namespace_metrics: bool = True, include_host_metrics: bool = True,
-                                  include_disk_metrics: bool = True):
+    def save_report_data_to_sheet(self):
+        self.active_worksheet = self.spreadsheet.worksheet(self.worksheet_name)
         for each_cluster in self.get_report_data():
             start = time()
             list_holder = []

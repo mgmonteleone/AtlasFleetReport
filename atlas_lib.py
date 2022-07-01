@@ -143,10 +143,12 @@ class HostData:
                 self.cache_bytes_read = measurements_obj
             elif measurements_obj.name == AtlasMeasurementTypes.Cache.bytes_written:
                 self.cache_bytes_written = measurements_obj
+
             elif measurements_obj.name == AtlasMeasurementTypes.Cache.used:
                 self.cache_used = measurements_obj
             elif measurements_obj.name == AtlasMeasurementTypes.Cache.dirty:
                 self.cache_dirty = measurements_obj
+
 
         except Exception as e:
             logger.info(f'We got an error adding the measurement: {e}')
@@ -232,7 +234,6 @@ class ClusterData:
         atlas_obj.Hosts.fill_host_list()
         host_list = list(atlas_obj.Hosts.host_list)
         logger.info(f'Cluster: {self.name}')
-
         filtered = [host for host in host_list if (host.cluster_name_alias == self.name or host.cluster_name == self.name)]
         return filtered
 
@@ -423,49 +424,46 @@ class Fleet:
 
                 # Host Measurements
                 if include_host_metrics:
+                    base_dict[str(host_data.cache_bytes_read.name)] = host_data.cache_bytes_read.measurement_stats.mean
+                    base_dict[str(host_data.cache_bytes_written.name)] = host_data.cache_bytes_written.measurement_stats.mean
+
                     base_dict[str(host_data.cache_used.name)] = host_data.cache_used.measurement_stats.mean
                     base_dict[str(host_data.cache_dirty.name)] = host_data.cache_dirty.measurement_stats.mean
-                    base_dict[str(host_data.cache_bytes_read.name)] = host_data.cache_bytes_read.measurement_stats.mean
-                    base_dict[
-                        str(host_data.cache_bytes_written.name)] = host_data.cache_bytes_written.measurement_stats.mean
 
-                    base_dict[
-                        str(host_data.targeting_objects.name)] = host_data.targeting_objects.measurement_stats.mean
-                    base_dict[
-                        str(host_data.targeting_per_returned.name)] = host_data.targeting_per_returned.measurement_stats.mean
+                    base_dict[str(host_data.tickets_read.name)] = host_data.tickets_read.measurement_stats.mean
+                    base_dict[str(host_data.tickets_write.name)] = host_data.tickets_write.measurement_stats.mean
 
                     base_dict[str(host_data.queued_readers.name)] = host_data.queued_readers.measurement_stats.mean
                     base_dict[str(host_data.queued_writers.name)] = host_data.queued_writers.measurement_stats.mean
 
-                    base_dict[str(host_data.tickets_write.name)] = host_data.tickets_write.measurement_stats.mean
-                    base_dict[str(host_data.tickets_read.name)] = host_data.tickets_read.measurement_stats.mean
-
-                    base_dict[str(host_data.db_data_size.name)] = host_data.db_data_size.measurement_stats.mean
                     base_dict[str(host_data.db_storage.name)] = host_data.db_storage.measurement_stats.mean
+                    base_dict[str(host_data.db_data_size.name)] = host_data.db_data_size.measurement_stats.mean
+
+                    base_dict[str(host_data.targeting_per_returned.name)] = host_data.targeting_per_returned.measurement_stats.mean
+                    base_dict[str(host_data.targeting_objects.name)] = host_data.targeting_objects.measurement_stats.mean
 
                     base_dict[str(host_data.net_in_data.name)] = host_data.net_in_data.measurement_stats.mean
                     base_dict[str(host_data.net_out_data.name)] = host_data.net_out_data.measurement_stats.mean
 
                 # Data Disk Metrics
                 if include_disk_metrics:
+                    base_dict[str(host_data.disk_iops_read.name)] = host_data.disk_iops_read.measurement_stats.mean
+                    base_dict[str(host_data.disk_iops_read_max.name)] = host_data.disk_iops_read_max.measurement_stats.mean
+
+                    base_dict[str(host_data.disk_iops_write.name)] = host_data.disk_iops_write.measurement_stats.mean
+                    base_dict[str(host_data.disk_iops_write_max.name)] = host_data.disk_iops_write_max.measurement_stats.mean
+
+                    base_dict[str(host_data.disk_latency_write.name)] = host_data.disk_latency_write.measurement_stats.mean
+                    base_dict[str(host_data.disk_latency_write_max.name)] = host_data.disk_latency_write_max.measurement_stats.mean
+
+                    base_dict[str(host_data.disk_latency_read.name)] = host_data.disk_latency_read.measurement_stats.mean
+                    base_dict[str(host_data.disk_latency_read_max.name)] = host_data.disk_latency_read_max.measurement_stats.mean
+
                     base_dict[str(host_data.disk_util.name)] = host_data.disk_util.measurement_stats.mean
                     base_dict[str(host_data.disk_util_max.name)] = host_data.disk_util_max.measurement_stats.mean
 
-                    base_dict[
-                        str(host_data.disk_latency_write.name)] = host_data.disk_latency_write.measurement_stats.mean
-                    base_dict[
-                        str(host_data.disk_latency_write_max.name)] = host_data.disk_latency_write_max.measurement_stats.mean
-                    base_dict[
-                        str(host_data.disk_latency_read.name)] = host_data.disk_latency_read.measurement_stats.mean
-                    base_dict[
-                        str(host_data.disk_latency_read_max.name)] = host_data.disk_latency_read_max.measurement_stats.mean
 
-                    base_dict[str(host_data.disk_iops_read.name)] = host_data.disk_iops_read.measurement_stats.mean
-                    base_dict[
-                        str(host_data.disk_iops_read_max.name)] = host_data.disk_iops_read_max.measurement_stats.mean
-                    base_dict[str(host_data.disk_iops_write.name)] = host_data.disk_iops_write.measurement_stats.mean
-                    base_dict[
-                        str(host_data.disk_iops_write_max.name)] = host_data.disk_iops_write_max.measurement_stats.mean
+
 
                 base_dict['Granularity'] = granularity
                 base_dict['Period'] = period

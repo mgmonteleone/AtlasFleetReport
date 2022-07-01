@@ -22,7 +22,8 @@ class GsheetOutputTests(BaseTests):
         report_obj = gsheet_lib.SingleProjFleetReport(atlas_user=os.getenv('ATLAS_USER'), atlas_key=os.getenv('ATLAS_KEY'),
                                                       sheet_uri=sheet_uri, atlas_group=os.getenv('ATLAS_GROUP'),
                                                       granularity=AtlasGranularities.HOUR, period=AtlasPeriods.HOURS_8,
-                                                      include_disk_metrics=True,include_host_metrics=True)
+                                                      include_disk_metrics=False,include_host_metrics=False, single_sheet_mode=True,
+                                                      single_sheet_name="Test")
         self.assertIsNotNone(report_obj.spreadsheet.creationTime)
         report_obj.create_sheet_headers_manual()
         report_obj.save_report_data_to_sheet()
