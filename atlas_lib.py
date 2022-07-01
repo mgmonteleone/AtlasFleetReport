@@ -1,3 +1,5 @@
+import datetime
+
 from atlasapi.atlas import Atlas
 from atlasapi.clusters import ClusterConfig, ClusterType
 from atlasapi.specs import ReplicaSetTypes, AtlasPeriods, AtlasGranularities, Host, AtlasMeasurementTypes, \
@@ -39,6 +41,7 @@ DISK_METRICS = [
     AtlasMeasurementTypes.Disk.Util.util_max
 ]
 
+
 class HostData:
     def __init__(self, host_obj: Host):
         """Holds information for each Atlas Host
@@ -66,11 +69,10 @@ class HostData:
         self.targeting_per_returned: Optional[AtlasMeasurement] = None
         self.targeting_objects: Optional[AtlasMeasurement] = None
 
-
         self.disk_iops_read: Optional[AtlasMeasurement] = None
         self.disk_iops_read_max: Optional[AtlasMeasurement] = None
         self.disk_iops_write: Optional[AtlasMeasurement] = None
-        self.disk_iops_write_max : Optional[AtlasMeasurement] = None
+        self.disk_iops_write_max: Optional[AtlasMeasurement] = None
 
         self.disk_latency_write: Optional[AtlasMeasurement] = None
         self.disk_latency_write_max: Optional[AtlasMeasurement] = None
@@ -82,7 +84,7 @@ class HostData:
 
     def store_measurement(self, measurements_obj: AtlasMeasurement) -> bool:
         try:
-            #Disk Metrics
+            # Disk Metrics
             if measurements_obj.name == AtlasMeasurementTypes.Disk.IOPS.read:
                 self.disk_iops_read = measurements_obj
             elif measurements_obj.name == AtlasMeasurementTypes.Disk.IOPS.read_max:
@@ -151,9 +153,8 @@ class HostData:
             return False
         return True
 
-    def store_measurements(self, atlas_obj: Atlas, granularity: AtlasGranularities = AtlasGranularities.FIVE_MINUTE,
-                           period=AtlasPeriods.WEEKS_1) -> None:
-        """Stores measurements from the API to the HostData object.
+    def store_host_measurements(self, atlas_obj: Atlas, granularity: AtlasGranularities, period) -> None:
+        """Stores host measurements from the API to the HostData object.
 
 
 
@@ -170,7 +171,19 @@ class HostData:
                                                                  measurement=each_measurement))[0]
             self.store_measurement(result)
             status_str.swapcase()
+
+    def store_disk_measurements(self, atlas_obj: Atlas, granularity: AtlasGranularities, period) -> None:
+        """Stores disk measurements from the API to the HostData object.
+
+
+
+        :param atlas_obj (Atlas):
+        :param granularity:
+        :param period:
+        """
+        status_str = f'Getting Measurements for {len(METRICS)} metrics. . .'
         # Retrieving and Storing Disk Measurements
+
         for each_disk_measure in self.host_obj.data_partition_stats(atlas_obj=atlas_obj,
                                                                     granularity=granularity,
                                                                     period=period):
@@ -219,7 +232,8 @@ class ClusterData:
         atlas_obj.Hosts.fill_host_list()
         host_list = list(atlas_obj.Hosts.host_list)
         logger.info(f'Cluster: {self.name}')
-        filtered = [host for host in host_list if host.cluster_name == self.name]
+
+        filtered = [host for host in host_list if (host.cluster_name_alias == self.name or host.cluster_name == self.name)]
         return filtered
 
     def primary(self, atlas_obj: Atlas) -> Optional[Host]:
@@ -271,28 +285,31 @@ class ClusterData:
         return item_count
 
     def count_collections(self, atlas_obj: Atlas) -> int:
-        return self.db_item_count(atlas_obj,AtlasMeasurementTypes.Namespaces.collection_count)
+        return self.db_item_count(atlas_obj, AtlasMeasurementTypes.Namespaces.collection_count)
 
     def count_indexes(self, atlas_obj: Atlas) -> int:
-        return self.db_item_count(atlas_obj,AtlasMeasurementTypes.Namespaces.index_count)
+        return self.db_item_count(atlas_obj, AtlasMeasurementTypes.Namespaces.index_count)
 
     def count_views(self, atlas_obj: Atlas) -> int:
-        return self.db_item_count(atlas_obj,AtlasMeasurementTypes.Namespaces.view_count)
+        return self.db_item_count(atlas_obj, AtlasMeasurementTypes.Namespaces.view_count)
 
-    def count_objects(self,atlas_obj: Atlas) -> int:
+    def count_objects(self, atlas_obj: Atlas) -> int:
         """ Number of objects (specifically, documents) in all  userland databases across all collections.
 
         :param atlas_obj:
         :return: Count
         """
-        return self.db_item_count(atlas_obj,AtlasMeasurementTypes.Namespaces.object_count)
+        return self.db_item_count(atlas_obj, AtlasMeasurementTypes.Namespaces.object_count)
 
     def primary_metrics(self, atlas_obj: Atlas,
-                        granularity: AtlasGranularities = None, period: AtlasPeriods = None) -> Optional[HostData]:
+                        granularity: AtlasGranularities, period: AtlasPeriods, host_metrics: bool, disk_metrics: bool
+                        ) -> Optional[HostData]:
         """Returns Atlas Metrics for the cluster's primary.
 
         Returns the pre-defined metrics defined in METRICS
 
+        :param disk_metrics:
+        :param host_metrics:
         :param atlas_obj: and instantiated Atlas object for connectivity to the API
         :param granularity: The granularity to be used for metrics.
         :param period: The period to be used for metrics.
@@ -300,10 +317,17 @@ class ClusterData:
         """
         primary: HostData = HostData(self.primary(atlas_obj=atlas_obj))
         if primary.host_obj:
-            logger.info(f'The primary is {primary.host_obj.hostname_alias}')
-            primary.store_measurements(atlas_obj, granularity=granularity, period=period)
+            print(f'The primary is {primary.host_obj.hostname_alias}')
+            print(f"In primary metrics Host metrics: {host_metrics}, disk metrics {disk_metrics}")
+            if host_metrics is True:
+                primary.store_host_measurements(atlas_obj, granularity=granularity, period=period)
+                print("Retrieving Host metrics")
+            if disk_metrics is True:
+                primary.store_disk_measurements(atlas_obj, granularity=granularity, period=period)
+                print("Retrieving disk metrics")
             return primary
         else:
+            print(f"Could not find a primary host object")
             return None
 
 
@@ -311,9 +335,14 @@ class Fleet:
     def __init__(self, atlas_obj: Atlas):
         """Holds information for an Atlas Fleet.
 
-        Can be single or Multi orginization.
 
-        :type atlas_obj: Atlas
+
+        Can be single org, or api key wide.
+
+        NOTE: If you are using a very widely scoped key (many many orgs, then you may want to instantate with
+        a group id to make this more managable.
+
+        :type atlas_obj: Atlas object instantiated at the level desired (key or group)
         """
         self.atlas = atlas_obj
 
@@ -327,22 +356,40 @@ class Fleet:
         """
         for each in self.atlas.Clusters.get_all_clusters(iterable=True):
             cluster = ClusterConfig.fill_from_dict(each)
+            electable_nodes = 0
+            analytics_nodes = 0
+            ro_nodes = 0
+            try:
+                electable_nodes = cluster.replication_specs[0].regions_config.get('US_EAST_1').get(
+                                          'electableNodes', 0)
+            except:
+                pass
+            try:
+                analytics_nodes = cluster.replication_specs[0].regions_config.get('US_EAST_1').get('analyticsNodes',
+                                                                                                       0)
+            except:
+                pass
+            try:
+                ro_nodes = cluster.replication_specs[0].regions_config.get('US_EAST_1').get('readOnlyNodes', 0)
+            except:
+                pass
             cluster_obj = ClusterData(self.atlas.Projects.project_by_id(self.atlas.group).name, self.atlas.group,
                                       cluster.id, cluster.name, cluster.disk_size_gb,
                                       cluster.providerSettings.instance_size_name, cluster.providerSettings.diskIOPS
-                                      , cluster.providerSettings.volumeType, cluster.num_shards,
-                                      cluster.replication_specs[0].regions_config.get('US_EAST_1').get(
-                                          'electableNodes'),
-                                      cluster.replication_specs[0].regions_config.get('US_EAST_1').get('analyticsNodes',
-                                                                                                       0),
-                                      cluster.replication_specs[0].regions_config.get('US_EAST_1').get('readOnlyNodes',
-                                                                                                       0),
+                                      , cluster.providerSettings.volumeType, cluster.num_shards, electable_nodes,
+                                      analytics_nodes, ro_nodes
                                       )
             yield cluster_obj
 
-    def get_full_report_primary_metrics(self, granularity: AtlasGranularities, period: AtlasPeriods) -> Iterable[dict]:
+    def get_full_report_primary_metrics(self, granularity: AtlasGranularities, period: AtlasPeriods,
+                                        include_host_metrics: bool,
+                                        include_namespace_metrics: bool,
+                                        include_disk_metrics: bool) -> Iterable[dict]:
         """
 
+        :param include_disk_metrics:
+        :param include_namespace_metrics:
+        :param include_host_metrics:
         :type period: object
         :type granularity: AtlasGranularities
         :param granularity: The granularity for the metrics. (default = 10 seconds)
@@ -354,58 +401,71 @@ class Fleet:
 
         if not period:
             period = AtlasPeriods.HOURS_24
-
+        print(f'Full Report parameters being sent are: G:{granularity}, P:{period}')
         for each_cluster in self.clusters_list:
             try:
-                host_data = each_cluster.primary_metrics(atlas_obj=self.atlas, granularity=granularity, period=period)
+                host_data = each_cluster.primary_metrics(atlas_obj=self.atlas, granularity=granularity, period=period,
+                                                         host_metrics=include_host_metrics,
+                                                         disk_metrics=include_disk_metrics)
+                print(f"Host metrics: {include_host_metrics}, disk metrics {include_disk_metrics}")
             except Exception as e:
                 logger.debug('--------Error Here-----------')
                 raise e
             base_dict = OrderedDict(each_cluster.__dict__)
             try:
                 # Namespace Counts
-                base_dict['views'] = each_cluster.count_views(self.atlas)
-                base_dict['objects'] = each_cluster.count_objects(self.atlas)
-                base_dict['indexes'] = each_cluster.count_indexes(self.atlas)
-                base_dict['collections'] = each_cluster.count_collections(self.atlas)
-                base_dict['databases'] = each_cluster.db_count(self.atlas)
+                if include_namespace_metrics:
+                    base_dict['views'] = each_cluster.count_views(self.atlas)
+                    base_dict['objects'] = each_cluster.count_objects(self.atlas)
+                    base_dict['indexes'] = each_cluster.count_indexes(self.atlas)
+                    base_dict['collections'] = each_cluster.count_collections(self.atlas)
+                    base_dict['databases'] = each_cluster.db_count(self.atlas)
 
                 # Host Measurements
-                base_dict[str(host_data.cache_used.name)] = host_data.cache_used.measurement_stats.mean
-                base_dict[str(host_data.cache_dirty.name)] = host_data.cache_dirty.measurement_stats.mean
-                base_dict[str(host_data.cache_bytes_read.name)] = host_data.cache_bytes_read.measurement_stats.mean
-                base_dict[
-                    str(host_data.cache_bytes_written.name)] = host_data.cache_bytes_written.measurement_stats.mean
+                if include_host_metrics:
+                    base_dict[str(host_data.cache_used.name)] = host_data.cache_used.measurement_stats.mean
+                    base_dict[str(host_data.cache_dirty.name)] = host_data.cache_dirty.measurement_stats.mean
+                    base_dict[str(host_data.cache_bytes_read.name)] = host_data.cache_bytes_read.measurement_stats.mean
+                    base_dict[
+                        str(host_data.cache_bytes_written.name)] = host_data.cache_bytes_written.measurement_stats.mean
 
-                base_dict[str(host_data.targeting_objects.name)] = host_data.targeting_objects.measurement_stats.mean
-                base_dict[
-                    str(host_data.targeting_per_returned.name)] = host_data.targeting_per_returned.measurement_stats.mean
+                    base_dict[
+                        str(host_data.targeting_objects.name)] = host_data.targeting_objects.measurement_stats.mean
+                    base_dict[
+                        str(host_data.targeting_per_returned.name)] = host_data.targeting_per_returned.measurement_stats.mean
 
-                base_dict[str(host_data.queued_readers.name)] = host_data.queued_readers.measurement_stats.mean
-                base_dict[str(host_data.queued_writers.name)] = host_data.queued_writers.measurement_stats.mean
+                    base_dict[str(host_data.queued_readers.name)] = host_data.queued_readers.measurement_stats.mean
+                    base_dict[str(host_data.queued_writers.name)] = host_data.queued_writers.measurement_stats.mean
 
-                base_dict[str(host_data.tickets_write.name)] = host_data.tickets_write.measurement_stats.mean
-                base_dict[str(host_data.tickets_read.name)] = host_data.tickets_read.measurement_stats.mean
+                    base_dict[str(host_data.tickets_write.name)] = host_data.tickets_write.measurement_stats.mean
+                    base_dict[str(host_data.tickets_read.name)] = host_data.tickets_read.measurement_stats.mean
 
-                base_dict[str(host_data.db_data_size.name)] = host_data.db_data_size.measurement_stats.mean
-                base_dict[str(host_data.db_storage.name)] = host_data.db_storage.measurement_stats.mean
+                    base_dict[str(host_data.db_data_size.name)] = host_data.db_data_size.measurement_stats.mean
+                    base_dict[str(host_data.db_storage.name)] = host_data.db_storage.measurement_stats.mean
 
-                base_dict[str(host_data.net_in_data.name)] = host_data.net_in_data.measurement_stats.mean
-                base_dict[str(host_data.net_out_data.name)] = host_data.net_out_data.measurement_stats.mean
+                    base_dict[str(host_data.net_in_data.name)] = host_data.net_in_data.measurement_stats.mean
+                    base_dict[str(host_data.net_out_data.name)] = host_data.net_out_data.measurement_stats.mean
 
                 # Data Disk Metrics
-                base_dict[str(host_data.disk_util.name)] = host_data.disk_util.measurement_stats.mean
-                base_dict[str(host_data.disk_util_max.name)] = host_data.disk_util_max.measurement_stats.mean
+                if include_disk_metrics:
+                    base_dict[str(host_data.disk_util.name)] = host_data.disk_util.measurement_stats.mean
+                    base_dict[str(host_data.disk_util_max.name)] = host_data.disk_util_max.measurement_stats.mean
 
-                base_dict[str(host_data.disk_latency_write.name)] = host_data.disk_latency_write.measurement_stats.mean
-                base_dict[str(host_data.disk_latency_write_max.name)] = host_data.disk_latency_write_max.measurement_stats.mean
-                base_dict[str(host_data.disk_latency_read.name)] = host_data.disk_latency_read.measurement_stats.mean
-                base_dict[str(host_data.disk_latency_read_max.name)] = host_data.disk_latency_read_max.measurement_stats.mean
+                    base_dict[
+                        str(host_data.disk_latency_write.name)] = host_data.disk_latency_write.measurement_stats.mean
+                    base_dict[
+                        str(host_data.disk_latency_write_max.name)] = host_data.disk_latency_write_max.measurement_stats.mean
+                    base_dict[
+                        str(host_data.disk_latency_read.name)] = host_data.disk_latency_read.measurement_stats.mean
+                    base_dict[
+                        str(host_data.disk_latency_read_max.name)] = host_data.disk_latency_read_max.measurement_stats.mean
 
-                base_dict[str(host_data.disk_iops_read.name)] = host_data.disk_iops_read.measurement_stats.mean
-                base_dict[str(host_data.disk_iops_read_max.name)] = host_data.disk_iops_read_max.measurement_stats.mean
-                base_dict[str(host_data.disk_iops_write.name)] = host_data.disk_iops_write.measurement_stats.mean
-                base_dict[str(host_data.disk_iops_write_max.name)] = host_data.disk_iops_write_max.measurement_stats.mean
+                    base_dict[str(host_data.disk_iops_read.name)] = host_data.disk_iops_read.measurement_stats.mean
+                    base_dict[
+                        str(host_data.disk_iops_read_max.name)] = host_data.disk_iops_read_max.measurement_stats.mean
+                    base_dict[str(host_data.disk_iops_write.name)] = host_data.disk_iops_write.measurement_stats.mean
+                    base_dict[
+                        str(host_data.disk_iops_write_max.name)] = host_data.disk_iops_write_max.measurement_stats.mean
 
                 base_dict['Granularity'] = granularity
                 base_dict['Period'] = period
@@ -426,3 +486,8 @@ class Fleet:
         dataFrame = df(data_list)
 
         return dataFrame
+
+    def events_since(self, since_datetime: datetime):
+        event_list = self.atlas.Events.since(since_datetime)
+        for each_event in event_list:
+            pprint(each_event.__dict__)
