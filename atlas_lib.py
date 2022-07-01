@@ -197,7 +197,7 @@ class ClusterData:
 
     def __init__(self, project_name: str, project_id: str,
                  id: str, name: str, disk_size: int, tier: str, IOPS: int, io_type: str,
-                 shards: int, electable: int, analytics: int, ro: int,
+                 shards: int, electable: int, analytics: int, ro: int, mongodb_major_version, mongodb_version
                  ):
         """Holds key data for an Atlas cluster.
 
@@ -217,6 +217,7 @@ class ClusterData:
         :param ro:
         :db_count:
         """
+
         self.ro = ro
         self.analytics = analytics
         self.electable = electable
@@ -229,7 +230,8 @@ class ClusterData:
         self.id = id
         self.project_id = project_id
         self.project_name = project_name
-
+        self.mongodb_version = mongodb_version
+        self.mongodb_major_version = mongodb_major_version
     def hosts(self, atlas_obj: Atlas) -> Iterable[Host]:
         atlas_obj.Hosts.fill_host_list()
         host_list = list(atlas_obj.Hosts.host_list)
@@ -378,7 +380,7 @@ class Fleet:
                                       cluster.id, cluster.name, cluster.disk_size_gb,
                                       cluster.providerSettings.instance_size_name, cluster.providerSettings.diskIOPS
                                       , cluster.providerSettings.volumeType, cluster.num_shards, electable_nodes,
-                                      analytics_nodes, ro_nodes
+                                      analytics_nodes, ro_nodes, cluster.mongodb_major_version, cluster.mongodb_version
                                       )
             yield cluster_obj
 

@@ -71,7 +71,7 @@ class SingleProjFleetReport:
         APPENDIX_HEADERS = ['Granularity', 'Period']
         NAMESPACE_HEADERS = ['views',	'objects',	'indexes',	'collections',	'databases']
         BASE_HEADERS = ['ro', 'analytics', 'electable', 'shards', 'io_type', 'IOPS', 'tier', 'disk_size', 'name', \
-                       'id', 'project_id', 'project_name']
+                       'id', 'project_id', 'project_name', 'db_version', 'db_major_version']
         if self.include_namespace_metrics is True:
             BASE_HEADERS.extend(NAMESPACE_HEADERS)
         if self.include_host_metrics is True:
