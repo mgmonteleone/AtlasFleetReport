@@ -7,11 +7,13 @@ import os
 from time import time
 import logging
 from pprint import pprint
+from typing import Iterable
 
 report_uri = 'https://docs.google.com/spreadsheets/d/1qKD9da3BnMJp9kNJenf_D5udsi4EhErAJ6bbZ69Icdw/edit#gid=0'
 
 logger = logging.getLogger("gsheet")
 logger.setLevel(logging.DEBUG)
+
 
 class SingleProjFleetReport:
     def __init__(self, atlas_user: str,
@@ -44,6 +46,7 @@ class SingleProjFleetReport:
         self.include_namespace_metrics = include_namespace_metrics
         self.include_host_metrics = include_host_metrics
         self.include_disk_metrics = include_disk_metrics
+        self.active_worksheet = None
 
     def create_sheet(self):
         if self.single_sheet_mode is False:
@@ -51,27 +54,36 @@ class SingleProjFleetReport:
                 self.active_worksheet = self.spreadsheet.worksheet(self.worksheet_name)
                 self.spreadsheet.del_worksheet(self.active_worksheet)
             except gspread.exceptions.WorksheetNotFound:
-                print("Spreadsheet not there, so will not delete it.")
+                print("✅Spreadsheet not there, so will not delete it.")
 
         try:
-            print(f"Creating Spreadsheet named {self.worksheet_name}")
+            print(f"🌈Creating Spreadsheet named {self.worksheet_name}")
             self.active_worksheet = self.spreadsheet.add_worksheet(self.worksheet_name, 2, 1)
         except gspread.exceptions.APIError as e:
             if 'already exists' in e.response.text:
-                print('No need to create, we will append to exisiting!!')
+                print('⏭No need to create, we will append to existing!!')
             else:
                 print(e.response.text)
                 raise e
 
     def update_status_in_sheet(self, row_ref: int = 1, col_ref: int = 1, status_text: str = 'OK'):
+        """Used to update the current status of the run in the (by default) first row of the sheet.
+
+        :param row_ref:
+        :param col_ref:
+        :param status_text:
+        """
         self.active_worksheet.update_cell(row_ref, col_ref, value=status_text)
 
     def create_sheet_headers_manual(self):
+        """Creates sheet headers based on fixed values, rather than dynamically building.
+
+        """
         self.active_worksheet = self.spreadsheet.worksheet(self.worksheet_name)
         APPENDIX_HEADERS = ['Granularity', 'Period']
-        NAMESPACE_HEADERS = ['views',	'objects',	'indexes',	'collections',	'databases']
-        BASE_HEADERS = ['ro', 'analytics', 'electable', 'shards', 'io_type', 'IOPS', 'tier', 'disk_size', 'name', \
-                       'id', 'project_id', 'project_name', 'db_version', 'db_major_version']
+        NAMESPACE_HEADERS = ['views', 'objects', 'indexes', 'collections', 'databases']
+        BASE_HEADERS = ['state', 'ro', 'analytics', 'electable', 'shards', 'io_type', 'IOPS', 'tier', 'disk_size',
+                        'name', 'id', 'project_id', 'project_name', 'db_version', 'db_major_version']
         if self.include_namespace_metrics is True:
             BASE_HEADERS.extend(NAMESPACE_HEADERS)
         if self.include_host_metrics is True:
@@ -88,9 +100,12 @@ class SingleProjFleetReport:
         self.update_status_in_sheet(status_text=f'Done Creating Headers ({int(time() - start)}s)')
         print(f'Done Creating Headers ({int(time() - start)}s)')
 
-
-
     def create_sheet_headers(self):
+        """Dynamically creates sheet headers based upon returned data.
+
+        This is a slower process.
+
+        """
         start = time()
         print(f'Creating Headers...')
         self.active_worksheet.update_cell(1, 1, value='Creating Headers.....')
@@ -135,13 +150,27 @@ class SingleProjFleetReport:
         }
         self.active_worksheet.format(f"A2:{xl_col_to_name(self.active_worksheet.col_count)}2", format)
 
-    def get_report_data(self) -> dict:
-        for each_cluster in self.fleet.get_full_report_primary_metrics(include_host_metrics=self.include_host_metrics,
-                                                                       include_namespace_metrics=self.include_namespace_metrics,
-                                                                       include_disk_metrics=self.include_disk_metrics,
-                                                                       granularity=self.granularity,
-                                                                       period=self.period):
-            yield each_cluster
+    def get_report_data(self, cluster_name: str = None) -> Iterable[dict]:
+        """Returns
+
+        """
+        if cluster_name:
+            for the_cluster in self.fleet.get_full_report_primary_metrics(
+                    include_host_metrics=self.include_host_metrics,
+                    include_namespace_metrics=self.include_namespace_metrics,
+                    include_disk_metrics=self.include_disk_metrics,
+                    granularity=self.granularity,
+                    period=self.period, cluster_name=cluster_name):
+                yield the_cluster
+        else:
+
+            for each_cluster in self.fleet.get_full_report_primary_metrics(
+                    include_host_metrics=self.include_host_metrics,
+                    include_namespace_metrics=self.include_namespace_metrics,
+                    include_disk_metrics=self.include_disk_metrics,
+                    granularity=self.granularity,
+                    period=self.period):
+                yield each_cluster
 
     def save_report_data_to_sheet(self):
         self.active_worksheet = self.spreadsheet.worksheet(self.worksheet_name)
@@ -194,9 +223,9 @@ class SingleOrgFleetReport:
             self.active_worksheet = self.spreadsheet.worksheet(self.org_obj.name)
             self.spreadsheet.del_worksheet(self.active_worksheet)
         except gspread.exceptions.WorksheetNotFound:
-            print("Spreadsheet not there, so will not delete it.")
+            print("✅Spreadsheet not there, so will not delete it.")
 
-        print(f"Creating Spreadsheet named {self.org_obj.name}")
+        print(f"🌈Creating Spreadsheet named {self.org_obj.name}")
         self.active_worksheet = self.spreadsheet.add_worksheet(self.org_obj.name, 2, 1)
         self.granularity: AtlasGranularities = granularity
         self.period: AtlasPeriods = period
@@ -204,39 +233,42 @@ class SingleOrgFleetReport:
         self.include_host_metrics = include_host_metrics
         self.include_disk_metrics = include_disk_metrics
 
-        self.create_sheet_headers()
-
     def update_status_in_sheet(self, row_ref: int = 1, col_ref: int = 1, status_text: str = 'OK'):
         self.active_worksheet.update_cell(row_ref, col_ref, value=status_text)
 
-    def create_sheet_headers(self):
+    def create_sheet_headers(self, manual: bool = False):
         start = time()
-        print(f'Creating Headers...')
-        self.active_worksheet.update_cell(1, 1, value='Creating Headers.....')
+        print(f'✅Creating Headers...')
+
+        self.active_worksheet.update_cell(1, 1, value='🚀Creating Headers.....')
         header = []
         print(
-            f'Going to use the following parameters for headers G: {AtlasGranularities.HOUR}, P: {AtlasPeriods.HOURS_8}')
+            f'✓Going to use the following parameters for headers G: {AtlasGranularities.HOUR}, P: {AtlasPeriods.HOURS_8}')
         for each in self.fleet_list:
-            if each.get('project_obj').cluster_count > 0:
-                first_proj = each.get('fleet_obj')
-                for each_one in first_proj.clusters_list:
-                    pprint(each_one.__dict__)
+            project_obj = each.get('project_obj')
+            print(f"👀The project we are evaluating is {project_obj.name}, it has {project_obj.cluster_count} clusters ")
+            if project_obj.cluster_count == 0:
+                print(f"⏭Skipping {project_obj.name}, no clusters.")
+                continue
+            else:
+                first_fleet: Fleet = each.get('fleet_obj')
+                for each_cluster in first_fleet.get_full_report_primary_metrics(granularity=AtlasGranularities.HOUR,
+                                                                                period=AtlasPeriods.HOURS_1,
+                                                                                include_namespace_metrics=self.include_namespace_metrics,
+                                                                                include_disk_metrics=self.include_disk_metrics,
+                                                                                include_host_metrics=self.include_host_metrics):
 
-        for each in first_proj.get_full_report_primary_metrics(granularity=AtlasGranularities.HOUR,
-                                                               period=AtlasPeriods.HOURS_8,
-                                                               include_namespace_metrics=self.include_namespace_metrics,
-                                                               include_disk_metrics=self.include_disk_metrics,
-                                                               include_host_metrics=self.include_host_metrics):
-            for each_name in each.keys():
-                header.append(each_name)
+                    for each_name in each_cluster.keys():
+                        header.append(each_name)
+                    break
             break
 
         self.active_worksheet.append_row(header)
-        print('Done creating headers')
-        self.update_status_in_sheet(status_text=f'Done Creating Headers ({int(time() - start)}s)')
-        print(f'Done Creating Headers ({int(time() - start)}s)')
+        print('🎉Done creating headers')
+        self.update_status_in_sheet(status_text=f'🎉Done Creating Headers ({int(time() - start)}s)')
+        print(f'🎉Done Creating Headers ({int(time() - start)}s)')
         self.active_worksheet = self.spreadsheet.worksheet(self.org_obj.name)
-        print(f"There are {self.active_worksheet.col_count} Columns")
+        print(f"✅There are {self.active_worksheet.col_count} Columns")
 
     def format_headers(self):
         format = {
@@ -260,28 +292,29 @@ class SingleOrgFleetReport:
         }
         self.active_worksheet.format(f"A2:{xl_col_to_name(self.active_worksheet.col_count)}2", format)
 
-    def get_report_data(self) -> dict:
-        for each_cluster in self.fleet.get_full_report_primary_metrics(include_host_metrics=self.include_host_metrics,
-                                                                       include_namespace_metrics=self.include_namespace_metrics,
-                                                                       include_disk_metrics=self.include_disk_metrics,
-                                                                       granularity=self.granularity,
-                                                                       period=self.period):
-            yield each_cluster
+    def get_report_data(self) -> Iterable[dict]:
+        for each_cluster in self.fleet_list:
+            cluster_out: Fleet = each_cluster.get('fleet_obj')
+            for each_cluster in cluster_out.get_full_report_primary_metrics(granularity=self.granularity,
+                                                                            period=self.period,
+                                                                            include_host_metrics=self.include_host_metrics,
+                                                                            include_namespace_metrics=self.include_namespace_metrics,
+                                                                            include_disk_metrics=self.include_disk_metrics):
+                yield each_cluster
 
     def save_report_data_to_sheet(self, include_namespace_metrics: bool = True, include_host_metrics: bool = True,
-                                  include_disk_metrics: bool = True):
+                                  include_disk_metrics: bool = True, top: int = 0):
         for each_cluster in self.get_report_data():
             start = time()
             list_holder = []
-            self.update_status_in_sheet(status_text=f'Pulling Data for {each_cluster.get("name")}')
+            self.update_status_in_sheet(status_text=f'🏃🏽‍Pulling Data for {each_cluster.get("name")}')
             for each_value in each_cluster.values():
                 if isinstance(each_value, Enum):  # If the value is  an enum, we need to get the value to be cleaner.
                     list_holder.append(each_value.value)
                 else:
                     list_holder.append(each_value)
-            print('Appending Row!!!')
-            print(f'Values are {list_holder.__str__()}')
-
+            print(f'➕Appending Row for {each_cluster.get("name")}')
+            logger.info('➕Appending Row!!!')
             self.active_worksheet.append_row(list_holder)
 
-            self.update_status_in_sheet(status_text=f"Completed {each_cluster.get('name')} ({time() - start})s")
+            self.update_status_in_sheet(status_text=f"🟩Completed {each_cluster.get('name')} (⏱{time() - start})s")

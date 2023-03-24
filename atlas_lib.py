@@ -1,7 +1,8 @@
 import datetime
+import os
 
 from atlasapi.atlas import Atlas
-from atlasapi.clusters import ClusterConfig, ClusterType
+from atlasapi.clusters import ClusterConfig, ClusterType, ClusterStates
 from atlasapi.specs import ReplicaSetTypes, AtlasPeriods, AtlasGranularities, Host, AtlasMeasurementTypes, \
     AtlasMeasurement, AtlasMeasurementValue
 from pprint import pprint
@@ -9,6 +10,8 @@ from typing import List, Optional, Generator, Union, Iterable
 from pandas import DataFrame as df
 from collections import OrderedDict
 import logging
+from time import time
+from multiprocessing import Pool
 
 logger = logging.getLogger(__name__)
 METRICS = [
@@ -40,6 +43,39 @@ DISK_METRICS = [
     AtlasMeasurementTypes.Disk.Util.util,
     AtlasMeasurementTypes.Disk.Util.util_max
 ]
+
+
+class ItemCounts:
+    def __init__(self):
+        """Stores Namespace metrics.
+
+        Includes incrementers for easier aggregate stogage.
+
+        """
+        self.views: int = 0
+        self.objects: int = 0
+        self.databases: int = 0
+        self.collections: int = 0
+        self.indexes: int = 0
+        self.data_size: int = 0
+
+    def add_views(self, count: int):
+        self.views += count
+
+    def add_databases(self, count: int):
+        self.databases += count
+
+    def add_collections(self, count: int):
+        self.collections += count
+
+    def add_objects(self, count: int):
+        self.objects += count
+
+    def add_indexes(self, count: int):
+        self.indexes += count
+
+    def add_data_size(self, size: int):
+        self.data_size += size
 
 
 class HostData:
@@ -149,7 +185,6 @@ class HostData:
             elif measurements_obj.name == AtlasMeasurementTypes.Cache.dirty:
                 self.cache_dirty = measurements_obj
 
-
         except Exception as e:
             logger.info(f'We got an error adding the measurement: {e}')
             return False
@@ -160,11 +195,11 @@ class HostData:
 
 
 
-        :param atlas_obj (Atlas):
+        :param atlas_obj:
         :param granularity:
         :param period:
         """
-        status_str = f'Getting Measurements for {len(METRICS)} metrics. . .'
+        status_str = f'📏Getting Measurements for {len(METRICS)} metrics. . .'
         # Retrieving and storing Host Metrics
         for each_measurement in METRICS:
             logger.info(status_str)
@@ -173,13 +208,14 @@ class HostData:
                                                                  measurement=each_measurement))[0]
             self.store_measurement(result)
             status_str.swapcase()
+            print(status_str)
 
     def store_disk_measurements(self, atlas_obj: Atlas, granularity: AtlasGranularities, period) -> None:
         """Stores disk measurements from the API to the HostData object.
 
 
 
-        :param atlas_obj (Atlas):
+        :param atlas_obj:
         :param granularity:
         :param period:
         """
@@ -197,7 +233,8 @@ class ClusterData:
 
     def __init__(self, project_name: str, project_id: str,
                  id: str, name: str, disk_size: int, tier: str, IOPS: int, io_type: str,
-                 shards: int, electable: int, analytics: int, ro: int, mongodb_major_version, mongodb_version
+                 shards: int, electable: int, analytics: int, ro: int, mongodb_major_version: str, mongodb_version,
+                 cluster_state_name: ClusterStates
                  ):
         """Holds key data for an Atlas cluster.
 
@@ -218,6 +255,7 @@ class ClusterData:
         :db_count:
         """
 
+        self.cluster_state_name = cluster_state_name
         self.ro = ro
         self.analytics = analytics
         self.electable = electable
@@ -232,15 +270,22 @@ class ClusterData:
         self.project_name = project_name
         self.mongodb_version = mongodb_version
         self.mongodb_major_version = mongodb_major_version
+
     def hosts(self, atlas_obj: Atlas) -> Iterable[Host]:
         atlas_obj.Hosts.fill_host_list()
         host_list = list(atlas_obj.Hosts.host_list)
+        print(f"The host list has {len(host_list)}")
         logger.info(f'Cluster: {self.name}')
-        filtered = [host for host in host_list if (host.cluster_name_alias == self.name or host.cluster_name == self.name)]
+        if len(self.name) >= 24:
+            print(f"🧯🧯Cluster name too long for alias matching! Need to truncate to {self.name[:23]}")
+        # Note hack here to workaround case-sensitive cluster names. Also hack to truncate cluster alias for matching!!!
+        filtered = [host for host in host_list if
+                    (
+                            host.cluster_name_alias.upper() == self.name.upper()[:23] or host.cluster_name.upper() == self.name.upper())]
         return filtered
 
     def primary(self, atlas_obj: Atlas) -> Optional[Host]:
-        """Returns a Host object of the CLusters current primary.
+        """Returns a Host object of the Clusters current primary.
 
         :param atlas_obj:
         :return:
@@ -251,6 +296,8 @@ class ClusterData:
                 primary_member = each
             else:
                 pass
+        if primary_member:
+            print(f"💎 The Primary is.... !{primary_member.hostname}")
         return primary_member
 
     def db_count(self, atlas_obj: Atlas, userland_only: bool = True) -> int:
@@ -269,7 +316,7 @@ class ClusterData:
         return count
 
     def db_item_count(self, atlas_obj: Atlas, measurement_to_count: AtlasMeasurementTypes.Namespaces):
-        """Returns the total count of the passed Namespace measurement for all databases.
+        """Returns the total count of the passed Namespace measurement for all databases. [Deprecated, slow..]
 
         Iterates through all userland databases and adds the max value.
 
@@ -286,6 +333,39 @@ class ClusterData:
                     if each_measurement.name == measurement_to_count:
                         item_count += each_measurement.measurement_stats.max
         return item_count
+
+    def db_items_counts(self, atlas_obj: Atlas) -> ItemCounts:
+        """Retrieves userland namespace metrics for a cluster.
+
+        Reduces number of calls by processing all metrics available in one run, and storing in a ItemCount obj.
+
+        :param atlas_obj:
+        """
+        primary = self.primary(atlas_obj)
+        item_count_obj = ItemCounts()
+        if primary:
+            for each_database in primary.get_databases(atlas_obj=atlas_obj):
+                if each_database not in ['admin', 'local', 'config']:
+                    database_stats = primary.get_measurements_for_database(atlas_obj=atlas_obj, database_name=each_database)
+                    item_count_obj.add_databases(1)
+                    for each_measurement in database_stats:
+                        # collections
+                        if each_measurement.name == AtlasMeasurementTypes.Namespaces.collection_count:
+                            item_count_obj.add_collections(int(each_measurement.measurement_stats.max))
+                        # objects
+                        if each_measurement.name == AtlasMeasurementTypes.Namespaces.object_count:
+                            item_count_obj.add_objects(int(each_measurement.measurement_stats.max))
+                        # indexes
+                        if each_measurement.name == AtlasMeasurementTypes.Namespaces.index_count:
+                            item_count_obj.add_indexes(int(each_measurement.measurement_stats.max))
+                        # views
+                        if each_measurement.name == AtlasMeasurementTypes.Namespaces.view_count:
+                            item_count_obj.add_views(int(each_measurement.measurement_stats.max))
+                        if each_measurement.name == AtlasMeasurementTypes.Namespaces.data_size:
+                            item_count_obj.add_data_size(int(each_measurement.measurement_stats.max))
+        else:
+            print(f"🧯 No primary found, so no namespace metrics avail, sorry dude.")
+        return item_count_obj
 
     def count_collections(self, atlas_obj: Atlas) -> int:
         return self.db_item_count(atlas_obj, AtlasMeasurementTypes.Namespaces.collection_count)
@@ -305,7 +385,7 @@ class ClusterData:
         return self.db_item_count(atlas_obj, AtlasMeasurementTypes.Namespaces.object_count)
 
     def primary_metrics(self, atlas_obj: Atlas,
-                        granularity: AtlasGranularities, period: AtlasPeriods, host_metrics: bool, disk_metrics: bool
+                        granularity: AtlasGranularities, period: AtlasPeriods, host_metrics: bool, disk_metrics: bool,
                         ) -> Optional[HostData]:
         """Returns Atlas Metrics for the cluster's primary.
 
@@ -320,14 +400,14 @@ class ClusterData:
         """
         primary: HostData = HostData(self.primary(atlas_obj=atlas_obj))
         if primary.host_obj:
-            print(f'The primary is {primary.host_obj.hostname_alias}')
-            print(f"In primary metrics Host metrics: {host_metrics}, disk metrics {disk_metrics}")
+            print(f"ℹ️In primary metrics Host metrics: {host_metrics}, disk metrics {disk_metrics}")
             if host_metrics is True:
                 primary.store_host_measurements(atlas_obj, granularity=granularity, period=period)
-                print("Retrieving Host metrics")
+                print("🖥Retrieving Host metrics")
             if disk_metrics is True:
                 primary.store_disk_measurements(atlas_obj, granularity=granularity, period=period)
-                print("Retrieving disk metrics")
+                print("💾Retrieving disk metrics")
+
             return primary
         else:
             print(f"Could not find a primary host object")
@@ -335,18 +415,19 @@ class ClusterData:
 
 
 class Fleet:
-    def __init__(self, atlas_obj: Atlas):
+    def __init__(self, atlas_obj: Atlas, region_for_members: str = os.getenv('ATLAS_REGION', 'US_EAST_1')):
         """Holds information for an Atlas Fleet.
 
 
 
         Can be single org, or api key wide.
 
-        NOTE: If you are using a very widely scoped key (many many orgs, then you may want to instantate with
-        a group id to make this more managable.
+        NOTE: If you are using a very widely scoped key (many many orgs, then you may want to instantiate with
+        a group id to make this more manageable.
 
         :type atlas_obj: Atlas object instantiated at the level desired (key or group)
         """
+        self.region_for_members = region_for_members
         self.atlas = atlas_obj
 
     @property
@@ -362,34 +443,52 @@ class Fleet:
             electable_nodes = 0
             analytics_nodes = 0
             ro_nodes = 0
+            print(f"Looking in region {self.region_for_members}")
+
+            pprint(cluster.replication_specs[0].__dict__)
             try:
-                electable_nodes = cluster.replication_specs[0].regions_config.get('US_EAST_1').get(
-                                          'electableNodes', 0)
+                electable_nodes = cluster.replication_specs[0].regions_config.get(self.region_for_members).get(
+                    'electableNodes', 0)
+                print(f"👍 Found {electable_nodes} electableNodes!")
+            except Exception as e:
+                print("❌❌❌ Error Getting electable members. . . ")
+                print(f"The region we are looking for is {self.region_for_members}")
+                pprint(cluster.replication_specs[0].__dict__)
+                raise(e)
+                #pass
+
+            try:
+                analytics_nodes = cluster.replication_specs[0].regions_config.get(self.region_for_members).get(
+                    'analyticsNodes',
+                    0)
+                print(f"👍 Found {analytics_nodes} analyticsNodes!")
             except:
                 pass
             try:
-                analytics_nodes = cluster.replication_specs[0].regions_config.get('US_EAST_1').get('analyticsNodes',
-                                                                                                       0)
-            except:
-                pass
-            try:
-                ro_nodes = cluster.replication_specs[0].regions_config.get('US_EAST_1').get('readOnlyNodes', 0)
+                ro_nodes = cluster.replication_specs[0].regions_config.get(self.region_for_members).get('readOnlyNodes',
+                                                                                                        0)
+                print(f"👍 Found {ro_nodes} readOnlyNodes!")
             except:
                 pass
             cluster_obj = ClusterData(self.atlas.Projects.project_by_id(self.atlas.group).name, self.atlas.group,
                                       cluster.id, cluster.name, cluster.disk_size_gb,
                                       cluster.providerSettings.instance_size_name, cluster.providerSettings.diskIOPS
                                       , cluster.providerSettings.volumeType, cluster.num_shards, electable_nodes,
-                                      analytics_nodes, ro_nodes, cluster.mongodb_major_version, cluster.mongodb_version
+                                      analytics_nodes, ro_nodes, cluster.mongodb_major_version, cluster.mongodb_version,
+                                      cluster.state_name
                                       )
             yield cluster_obj
 
+    def process_ns_metrics(self, var, object):
+        return {var: object}
+
     def get_full_report_primary_metrics(self, granularity: AtlasGranularities, period: AtlasPeriods,
-                                        include_host_metrics: bool,
-                                        include_namespace_metrics: bool,
-                                        include_disk_metrics: bool) -> Iterable[dict]:
+                                        include_host_metrics: bool = False,
+                                        include_namespace_metrics: bool = True,
+                                        include_disk_metrics: bool = False, cluster_name: str = None) -> Iterable[dict]:
         """
 
+        :param cluster_name:
         :param include_disk_metrics:
         :param include_namespace_metrics:
         :param include_host_metrics:
@@ -399,35 +498,50 @@ class Fleet:
         :param period : The period for metrics. (default = 24 hours)
 
         """
+        start_time = time()
         if not granularity:
             granularity = AtlasGranularities.TEN_SECOND
 
         if not period:
             period = AtlasPeriods.HOURS_24
-        print(f'Full Report parameters being sent are: G:{granularity}, P:{period}')
-        for each_cluster in self.clusters_list:
+        print(f'🚀Full Report parameters being sent are: G:{granularity}, P:{period}')
+
+        if cluster_name:
+            print(f"⚖️ Filtering for a single cluster named {cluster_name}")
+            cluster_list = (cluster for cluster in self.clusters_list if cluster.name == cluster_name)
+            print(f"⏲ Took {time() - start_time} to filter the list")
+        else:
+            cluster_list = self.clusters_list
+
+        for each_cluster in cluster_list:
             try:
                 host_data = each_cluster.primary_metrics(atlas_obj=self.atlas, granularity=granularity, period=period,
                                                          host_metrics=include_host_metrics,
                                                          disk_metrics=include_disk_metrics)
-                print(f"Host metrics: {include_host_metrics}, disk metrics {include_disk_metrics}")
+
+                print(
+                    f"ℹ️Host metrics: {include_host_metrics}, disk metrics {include_disk_metrics}, ns_metrics {include_namespace_metrics} took {time() - start_time}s")
             except Exception as e:
-                logger.debug('--------Error Here-----------')
+                logger.debug('❌--------Error Here-----------')
                 raise e
             base_dict = OrderedDict(each_cluster.__dict__)
+            # Namespace counts
+            if include_namespace_metrics:
+                print("🧭Getting namespace metrics")
+                count_obj = each_cluster.db_items_counts(self.atlas)
+                base_dict['views'] = count_obj.views
+                base_dict['objects'] = count_obj.objects
+                base_dict['indexes'] = count_obj.indexes
+                base_dict['collections'] = count_obj.collections
+                base_dict['databases'] = count_obj.databases
+                base_dict['data_size'] = count_obj.data_size
+                print(f"⏲ Took {time() - start_time}s to get to namespace dict.")
             try:
-                # Namespace Counts
-                if include_namespace_metrics:
-                    base_dict['views'] = each_cluster.count_views(self.atlas)
-                    base_dict['objects'] = each_cluster.count_objects(self.atlas)
-                    base_dict['indexes'] = each_cluster.count_indexes(self.atlas)
-                    base_dict['collections'] = each_cluster.count_collections(self.atlas)
-                    base_dict['databases'] = each_cluster.db_count(self.atlas)
-
                 # Host Measurements
                 if include_host_metrics:
                     base_dict[str(host_data.cache_bytes_read.name)] = host_data.cache_bytes_read.measurement_stats.mean
-                    base_dict[str(host_data.cache_bytes_written.name)] = host_data.cache_bytes_written.measurement_stats.mean
+                    base_dict[
+                        str(host_data.cache_bytes_written.name)] = host_data.cache_bytes_written.measurement_stats.mean
 
                     base_dict[str(host_data.cache_used.name)] = host_data.cache_used.measurement_stats.mean
                     base_dict[str(host_data.cache_dirty.name)] = host_data.cache_dirty.measurement_stats.mean
@@ -441,37 +555,47 @@ class Fleet:
                     base_dict[str(host_data.db_storage.name)] = host_data.db_storage.measurement_stats.mean
                     base_dict[str(host_data.db_data_size.name)] = host_data.db_data_size.measurement_stats.mean
 
-                    base_dict[str(host_data.targeting_per_returned.name)] = host_data.targeting_per_returned.measurement_stats.mean
-                    base_dict[str(host_data.targeting_objects.name)] = host_data.targeting_objects.measurement_stats.mean
+                    base_dict[
+                        str(host_data.targeting_per_returned.name)] = host_data.targeting_per_returned.measurement_stats.mean
+                    base_dict[
+                        str(host_data.targeting_objects.name)] = host_data.targeting_objects.measurement_stats.mean
 
                     base_dict[str(host_data.net_in_data.name)] = host_data.net_in_data.measurement_stats.mean
                     base_dict[str(host_data.net_out_data.name)] = host_data.net_out_data.measurement_stats.mean
+                    print(f"⏲ Took {time() - start_time}s to get to host dict.")
 
                 # Data Disk Metrics
                 if include_disk_metrics:
                     base_dict[str(host_data.disk_iops_read.name)] = host_data.disk_iops_read.measurement_stats.mean
-                    base_dict[str(host_data.disk_iops_read_max.name)] = host_data.disk_iops_read_max.measurement_stats.mean
+                    base_dict[
+                        str(host_data.disk_iops_read_max.name)] = host_data.disk_iops_read_max.measurement_stats.mean
 
                     base_dict[str(host_data.disk_iops_write.name)] = host_data.disk_iops_write.measurement_stats.mean
-                    base_dict[str(host_data.disk_iops_write_max.name)] = host_data.disk_iops_write_max.measurement_stats.mean
+                    base_dict[
+                        str(host_data.disk_iops_write_max.name)] = host_data.disk_iops_write_max.measurement_stats.mean
 
-                    base_dict[str(host_data.disk_latency_write.name)] = host_data.disk_latency_write.measurement_stats.mean
-                    base_dict[str(host_data.disk_latency_write_max.name)] = host_data.disk_latency_write_max.measurement_stats.mean
+                    base_dict[
+                        str(host_data.disk_latency_write.name)] = host_data.disk_latency_write.measurement_stats.mean
+                    base_dict[
+                        str(host_data.disk_latency_write_max.name)] = host_data.disk_latency_write_max.measurement_stats.mean
 
-                    base_dict[str(host_data.disk_latency_read.name)] = host_data.disk_latency_read.measurement_stats.mean
-                    base_dict[str(host_data.disk_latency_read_max.name)] = host_data.disk_latency_read_max.measurement_stats.mean
+                    base_dict[
+                        str(host_data.disk_latency_read.name)] = host_data.disk_latency_read.measurement_stats.mean
+                    base_dict[
+                        str(host_data.disk_latency_read_max.name)] = host_data.disk_latency_read_max.measurement_stats.mean
 
                     base_dict[str(host_data.disk_util.name)] = host_data.disk_util.measurement_stats.mean
                     base_dict[str(host_data.disk_util_max.name)] = host_data.disk_util_max.measurement_stats.mean
-
-
-
+                    print(f"⏲ Took {time() - start_time}s to get to disk dict.")
 
                 base_dict['Granularity'] = granularity
                 base_dict['Period'] = period
+                print(f"⏲ Took {time() - start_time}s to get to filled dict.")
             except AttributeError as e:
                 # We want to skip over an error which is caused by no primary being available.
                 if 'object has no attribute' in str(e):
+                    print("🧯🧯🧯 Error!!")
+                    print(f"The error was: {e}")
                     logger.info(f"No primary available for {each_cluster.name}, could not get metrics")
                 else:
                     raise e

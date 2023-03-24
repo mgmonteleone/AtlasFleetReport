@@ -1,8 +1,13 @@
 gsheets
 gspread
 pydrive2
-atlasapi>=2.0.1
+atlasapi==2.0.7
 texttable
 pandas
 humanfriendly
 xlsxwriter
+pymongo
+dnspython
+numpy
+pyarrow
+pymongoarrow
